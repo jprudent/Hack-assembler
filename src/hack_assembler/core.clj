@@ -3,6 +3,18 @@
 (defn- remove-spaces [s]
   (clojure.string/replace s #"\s" ""))
 
+(defn index-where                                           ;;TODO move to util.vector
+  ([v pred] (index-where v pred 0))
+  ([v pred i]
+   (if (empty? v)
+     nil
+     (if (pred (first v))
+       i
+       (recur (rest v) pred (inc i))))))
+
+(defn replacev-at [v i val]                                 ;;TODO move to util.vector
+  (into (conj (subvec v 0 i) val) (subvec v (inc i))))
+
 (def ^:static predefined-symbols
   [["SP" 0]
    ["LCL" 1]
@@ -67,6 +79,7 @@
    nil   2r000})
 
 (def ^:static C-INSTR-MASK 2r1110000000000000)
+
 (def ^:static A-MASK 2r0001000000000000)
 
 (defn format-statement [line]
@@ -76,29 +89,23 @@
 
 (def user-symbol? (partial re-matches #"^[^\d](?:[\p{Alnum}_\.$:]*)"))
 
+(defn referenced? [symbols symb]
+  (some #(when (= symb (first %)) true) symbols))
+
 (defn get-symbol-address [symbols symb]
   (some #(when (= symb (first %)) (second %)) symbols))
 
-(defn index-where
-  ([v pred] (index-where v pred 0))
-  ([v pred i]
-   (if (empty? v)
-     nil
-     (if (pred (first v))
-       i
-       (recur (rest v) pred (inc i))))))
+(defn reference-symbol                                      ;; TODO use protocol for symbol table ?
+  [symbols symb]
+  (if (referenced? symbols symb)
+    symbols
+    (conj symbols [symb nil])))
 
-(defn replacev-at [v i val]
-  (into (conj (subvec v 0 i) val) (subvec v (inc i))))
-
-(defn define-symbol
-  ([symbols symb] (define-symbol symbols symb nil))
-  ([symbols symb address]
-   (if (get-symbol-address symbols symb)
-     symbols
-     (if-let [symb-index (index-where symbols #(= symb (first %)) 0)]
-       (replacev-at symbols symb-index [symb address])
-       (conj symbols [symb address])))))
+(defn affect-symbol
+  [symbols symb address]
+  (if-let [symb-index (index-where symbols #(= symb (first %)) 0)]
+    (replacev-at symbols symb-index [symb address])
+    (conj symbols [symb address])))
 
 (defn replace-nil-address [{:keys [symbols var-count] :as ctx}
                            [symb address :as symbol-def]]
@@ -117,6 +124,7 @@
 
 (defn s->int [s] (Integer/parseInt s))
 
+;; TODO use multimethod
 (def parsers
   [{:matcher   #(.startsWith % "@")
     :statement (fn [statement {:keys [symbols]}]
@@ -126,9 +134,9 @@
                     :address address}))
     :symbols   (fn [statement {:keys [symbols next-pc]}]
                  (let [symb (subs statement 1)]
-                   (if (and (user-symbol? symb) (nil? (get-symbol-address symbols symb)))
-                     (symb-context (define-symbol symbols symb) (inc next-pc))
-                     (symb-context symbols (inc next-pc)))))}
+                   (if (user-symbol? symb)
+                     (symb-context (reference-symbol symbols symb) (inc next-pc))
+                     (symb-context symbols (inc next-pc)))))} ;; TODO SRP
 
    {:matcher   #(.contains % "=")
     :statement (fn [statement _]
@@ -142,7 +150,7 @@
     :statement (constantly nil)
     :symbols   (fn [statement {:keys [symbols next-pc]}]
                  (let [[_ symb] (re-matches #"^\((.+)\)$" statement)]
-                   (symb-context (define-symbol symbols symb next-pc) next-pc)))}
+                   (symb-context (affect-symbol symbols symb next-pc) next-pc)))}
 
    {:matcher   #(re-matches #"[^;]+;J\p{Upper}{2}" %)
     :statement (fn [statement _]
@@ -166,7 +174,7 @@
     context))
 
 (defn parse-symbols [context line]
-  (println (:symbols context) line)
+  (println (count (:symbols context)) line)
   (or (parse context line :symbols) context))
 
 (defn comp->mnemonic [comp]
@@ -196,12 +204,12 @@
 (defmethod assemble :C_INSTRUCTION [{:keys [dest comp]}]
   (assemble-c comp dest nil))
 
-(defn pad-left0 [s]
+(defn pad16-left0 [s]
   (str (reduce str (repeat (- 16 (count s)) "0")) s))
 
 (defn int->2rstring [i]
   (-> (Integer/toString i 2)
-      pad-left0))
+      pad16-left0))
 
 (defn asm-file->hack-file [asm-file]
   (let [[_ path name] (re-matches #"(.*/)(\w+).asm" asm-file)]
@@ -233,5 +241,5 @@
       (phase2 asm-file lines symbols))))
 
 #_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/add/Add.asm")
-(assembler "/home/stup3fait/bin/nand2tetris/projects/06/max/Max.asm")
-#_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/pong/Pong.asm")
+#_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/max/Max.asm")
+(assembler "/home/jerome/bin/nand2tetris/projects/06/pong/Pong.asm")
