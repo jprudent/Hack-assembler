@@ -4,29 +4,29 @@
   (clojure.string/replace s #"\s" ""))
 
 (def ^:static predefined-symbols
-  {"SP"     0
-   "LCL"    1
-   "ARG"    2
-   "THIS"   3
-   "THAT"   4
-   "R0"     0
-   "R1"     1
-   "R2"     2
-   "R3"     3
-   "R4"     4
-   "R5"     5
-   "R6"     6
-   "R7"     7
-   "R8"     8
-   "R9"     9
-   "R10"    10
-   "R11"    11
-   "R12"    12
-   "R13"    13
-   "R14"    14
-   "R15"    15
-   "SCREEN" 16384
-   "KBD"    24576})
+  [["SP" 0]
+   ["LCL" 1]
+   ["ARG" 2]
+   ["THIS" 3]
+   ["THAT" 4]
+   ["R0" 0]
+   ["R1" 1]
+   ["R2" 2]
+   ["R3" 3]
+   ["R4" 4]
+   ["R5" 5]
+   ["R6" 6]
+   ["R7" 7]
+   ["R8" 8]
+   ["R9" 9]
+   ["R10" 10]
+   ["R11" 11]
+   ["R12" 12]
+   ["R13" 13]
+   ["R14" 14]
+   ["R15" 15]
+   ["SCREEN" 16384]
+   ["KBD" 24576]])
 
 (def ^:static userspace-vars 16)
 
@@ -77,22 +77,39 @@
 (def user-symbol? (partial re-matches #"^[^\d](?:[\p{Alnum}_\.$:]*)"))
 
 (defn get-symbol-address [symbols symb]
-  (symbols symb))
+  (some #(when (= symb (first %)) (second %)) symbols))
+
+(defn index-where
+  ([v pred] (index-where v pred 0))
+  ([v pred i]
+   (if (empty? v)
+     nil
+     (if (pred (first v))
+       i
+       (recur (rest v) pred (inc i))))))
+
+(defn replacev-at [v i val]
+  (into (conj (subvec v 0 i) val) (subvec v (inc i))))
 
 (defn define-symbol
   ([symbols symb] (define-symbol symbols symb nil))
   ([symbols symb address]
    (if (get-symbol-address symbols symb)
      symbols
-     (assoc symbols symb address))))
+     (if-let [symb-index (index-where symbols #(= symb (first %)) 0)]
+       (replacev-at symbols symb-index [symb address])
+       (conj symbols [symb address])))))
+
+(defn replace-nil-address [{:keys [symbols var-count] :as ctx}
+                           [symb address :as symbol-def]]
+  (if address
+    (assoc ctx :symbols (conj symbols symbol-def))
+    (assoc ctx :symbols (conj symbols [symb (+ userspace-vars var-count)])
+               :var-count (inc var-count))))
 
 (defn compute-nil-addresses [symbols]
-  (->> (filter (comp nil? second) symbols)
-       (map first)
-       (map #(vector %2 (+ userspace-vars %1)) (range))
-       flatten
-       (apply hash-map)
-       (merge symbols)))
+  (-> (reduce replace-nil-address {:symbols [] :var-count 0} symbols)
+      :symbols))
 
 (defn symb-context [symbols next-pc]
   {:symbols symbols
@@ -149,6 +166,7 @@
     context))
 
 (defn parse-symbols [context line]
+  (println (:symbols context) line)
   (or (parse context line :symbols) context))
 
 (defn comp->mnemonic [comp]
@@ -214,6 +232,6 @@
           symbols (phase1 lines)]
       (phase2 asm-file lines symbols))))
 
-(assembler "/home/stup3fait/bin/nand2tetris/projects/06/add/Add.asm")
+#_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/add/Add.asm")
 (assembler "/home/stup3fait/bin/nand2tetris/projects/06/max/Max.asm")
-(assembler "/home/stup3fait/bin/nand2tetris/projects/06/pong/Pong.asm")
+#_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/pong/Pong.asm")
