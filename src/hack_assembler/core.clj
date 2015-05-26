@@ -82,30 +82,13 @@
 
 (def ^:static A-MASK 2r0001000000000000)
 
-(defn format-statement [line]
-  (->> (remove-spaces line)
-       (re-matches #"^([^/]+)(?://)?.*$")
-       second))
+(defprotocol SymbolTable
+  (referenced? [this symbol])
+  (get-symbol-address [this symbol])
+  (reference-symbol [this symbol])
+  (affect-symbol [this symbol address])
+  (compute-nil-addresses [this]))
 
-(def user-symbol? (partial re-matches #"^[^\d](?:[\p{Alnum}_\.$:]*)"))
-
-(defn referenced? [symbols symb]
-  (some #(when (= symb (first %)) true) symbols))
-
-(defn get-symbol-address [symbols symb]
-  (some #(when (= symb (first %)) (second %)) symbols))
-
-(defn reference-symbol                                      ;; TODO use protocol for symbol table ?
-  [symbols symb]
-  (if (referenced? symbols symb)
-    symbols
-    (conj symbols [symb nil])))
-
-(defn affect-symbol
-  [symbols symb address]
-  (if-let [symb-index (index-where symbols #(= symb (first %)) 0)]
-    (replacev-at symbols symb-index [symb address])
-    (conj symbols [symb address])))
 
 (defn replace-nil-address [{:keys [symbols var-count] :as ctx}
                            [symb address :as symbol-def]]
@@ -114,9 +97,73 @@
     (assoc ctx :symbols (conj symbols [symb (+ userspace-vars var-count)])
                :var-count (inc var-count))))
 
-(defn compute-nil-addresses [symbols]
-  (-> (reduce replace-nil-address {:symbols [] :var-count 0} symbols)
-      :symbols))
+#_(extend-type IPersistentVector
+  SymbolTable
+  (referenced? [this symbol]
+    (some #(when (= symbol (first %)) true) this))
+
+  (get-symbol-address [this symbol]
+    (some #(when (= symbol (first %)) (second %)) this))
+
+  (reference-symbol [this symbol]
+    (if (referenced? this symbol)
+      this
+      (conj this [symbol nil])))
+
+  (affect-symbol [this symbol address]
+    (if-let [symb-index (index-where this #(= symbol (first %)) 0)]
+      (replacev-at this symb-index [symbol address])
+      (conj this [symbol address])))
+
+  (compute-nil-addresses [this]
+    (-> (reduce replace-nil-address {:symbols [] :var-count 0} this)
+        :symbols)))
+
+(defrecord IndexMappedSymbolTable [index-map table]
+  SymbolTable
+  (referenced? [_ symbol]
+    (contains? index-map symbol))
+
+  (get-symbol-address [_ symbol]
+    (get table (index-map symbol)))
+
+  (reference-symbol [this symbol]
+    (if (referenced? this symbol)
+      this
+      (->IndexMappedSymbolTable
+        (assoc index-map symbol (count table))
+        (conj this [symbol nil]))))
+
+  (affect-symbol [this symbol address]
+    (if-let [symb-index (index-map symbol)]
+      (->IndexMappedSymbolTable index-map (replacev-at table symb-index [symbol address]))
+      (->IndexMappedSymbolTable
+        (assoc index-map symbol (count table))
+        (conj this [symbol nil]))))
+
+  (compute-nil-addresses [this]
+    (->IndexMappedSymbolTable
+      index-map
+      (-> (reduce replace-nil-address {:symbols [] :var-count 0} this)
+          :symbols))))
+
+(defn ->symbol-table [predefined-symbols]
+  (->IndexMappedSymbolTable
+    (->> (map #(vector (first %1) %2) predefined-symbols (range))
+         flatten
+        (apply hash-map))
+    predefined-symbols)
+  predefined-symbols)
+
+
+(defn format-statement [line]
+  (->> (remove-spaces line)
+       (re-matches #"^([^/]+)(?://)?.*$")
+       second))
+
+(def user-symbol? (partial re-matches #"^[^\d](?:[\p{Alnum}_\.$:]*)"))
+
+
 
 (defn symb-context [symbols next-pc]
   {:symbols symbols
@@ -174,7 +221,6 @@
     context))
 
 (defn parse-symbols [context line]
-  (println (count (:symbols context)) line)
   (or (parse context line :symbols) context))
 
 (defn comp->mnemonic [comp]
@@ -220,7 +266,7 @@
 
 
 (defn phase1 [lines]
-  (->> (reduce parse-symbols {:symbols predefined-symbols, :next-pc 0} lines)
+  (->> (reduce parse-symbols {:symbols (->symbol-table predefined-symbols), :next-pc 0} lines)
        :symbols
        compute-nil-addresses))
 
@@ -242,4 +288,4 @@
 
 #_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/add/Add.asm")
 #_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/max/Max.asm")
-(assembler "/home/jerome/bin/nand2tetris/projects/06/pong/Pong.asm")
+(time (assembler "/home/jerome/bin/nand2tetris/projects/06/pong/Pong.asm"))
