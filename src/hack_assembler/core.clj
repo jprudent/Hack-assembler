@@ -1,19 +1,12 @@
-(ns hack-assembler.core)
+(ns hack-assembler.core
+  (:import (clojure.lang IPersistentVector)))
 
-(defn- remove-spaces [s]
-  (clojure.string/replace s #"\s" ""))
-
-(defn index-where                                           ;;TODO move to util.vector
-  ([v pred] (index-where v pred 0))
-  ([v pred i]
-   (if (empty? v)
-     nil
-     (if (pred (first v))
-       i
-       (recur (rest v) pred (inc i))))))
-
-(defn replacev-at [v i val]                                 ;;TODO move to util.vector
-  (into (conj (subvec v 0 i) val) (subvec v (inc i))))
+(defprotocol SymbolTable
+  (referenced? [this symbol])
+  (get-symbol-address [this symbol])
+  (reference-symbol [this symbol])
+  (affect-symbol [this symbol address])
+  (compute-nil-addresses [this]))
 
 (def ^:static predefined-symbols
   [["SP" 0]
@@ -82,14 +75,6 @@
 
 (def ^:static A-MASK 2r0001000000000000)
 
-(defprotocol SymbolTable
-  (referenced? [this symbol])
-  (get-symbol-address [this symbol])
-  (reference-symbol [this symbol])
-  (affect-symbol [this symbol address])
-  (compute-nil-addresses [this]))
-
-
 (defn replace-nil-address [{:keys [symbols var-count] :as ctx}
                            [symb address :as symbol-def]]
   (if address
@@ -97,27 +82,40 @@
     (assoc ctx :symbols (conj symbols [symb (+ userspace-vars var-count)])
                :var-count (inc var-count))))
 
-#_(extend-type IPersistentVector
-  SymbolTable
-  (referenced? [this symbol]
-    (some #(when (= symbol (first %)) true) this))
+(comment "Symbol table vector backed is 2 times slower than IndexMappedSymbolTable"
+         (defn index-where
+           ([v pred]
+            {:post [(or (nil? %)
+                        (and (not (neg? %))
+                             (pred (get v %))))]}
+            (loop [v v i 0]
+              (if (empty? v)
+                nil
+                (if (pred (first v))
+                  i
+                  (recur (rest v) (inc i)))))))
 
-  (get-symbol-address [this symbol]
-    (some #(when (= symbol (first %)) (second %)) this))
+         (extend-type IPersistentVector
+           SymbolTable
+           (referenced? [this symbol]
+             (some #(when (= symbol (first %)) true) this))
 
-  (reference-symbol [this symbol]
-    (if (referenced? this symbol)
-      this
-      (conj this [symbol nil])))
+           (get-symbol-address [this symbol]
+             (some #(when (= symbol (first %)) (second %)) this))
 
-  (affect-symbol [this symbol address]
-    (if-let [symb-index (index-where this #(= symbol (first %)) 0)]
-      (replacev-at this symb-index [symbol address])
-      (conj this [symbol address])))
+           (reference-symbol [this symbol]
+             (if (referenced? this symbol)
+               this
+               (conj this [symbol nil])))
 
-  (compute-nil-addresses [this]
-    (-> (reduce replace-nil-address {:symbols [] :var-count 0} this)
-        :symbols)))
+           (affect-symbol [this symbol address]
+             (if-let [symb-index (index-where this #(= symbol (first %)))]
+               (assoc this symb-index [symbol address])
+               (conj this [symbol address])))
+
+           (compute-nil-addresses [this]
+             (-> (reduce replace-nil-address {:symbols [] :var-count 0} this)
+                 :symbols))))
 
 (defrecord IndexMappedSymbolTable [index-map table]
   SymbolTable
@@ -125,36 +123,39 @@
     (contains? index-map symbol))
 
   (get-symbol-address [_ symbol]
-    (get table (index-map symbol)))
+    (->> (index-map symbol)
+         (get table)
+         second))
 
   (reference-symbol [this symbol]
     (if (referenced? this symbol)
       this
       (->IndexMappedSymbolTable
         (assoc index-map symbol (count table))
-        (conj this [symbol nil]))))
+        (conj table [symbol nil]))))
 
-  (affect-symbol [this symbol address]
+  (affect-symbol [_ symbol address]
     (if-let [symb-index (index-map symbol)]
-      (->IndexMappedSymbolTable index-map (replacev-at table symb-index [symbol address]))
+      (->IndexMappedSymbolTable index-map (assoc table symb-index [symbol address]))
       (->IndexMappedSymbolTable
         (assoc index-map symbol (count table))
-        (conj this [symbol nil]))))
+        (conj table [symbol address]))))
 
-  (compute-nil-addresses [this]
+  (compute-nil-addresses [_]
     (->IndexMappedSymbolTable
       index-map
-      (-> (reduce replace-nil-address {:symbols [] :var-count 0} this)
+      (-> (reduce replace-nil-address {:symbols [] :var-count 0} table)
           :symbols))))
 
 (defn ->symbol-table [predefined-symbols]
-  (->IndexMappedSymbolTable
-    (->> (map #(vector (first %1) %2) predefined-symbols (range))
-         flatten
-        (apply hash-map))
-    predefined-symbols)
+  (reduce (fn [symb-table [symb address]]
+            (affect-symbol symb-table symb address))
+          (->IndexMappedSymbolTable {} [])
+          predefined-symbols)
   predefined-symbols)
 
+(defn remove-spaces [s]
+  (clojure.string/replace s #"\s" ""))
 
 (defn format-statement [line]
   (->> (remove-spaces line)
@@ -162,8 +163,6 @@
        second))
 
 (def user-symbol? (partial re-matches #"^[^\d](?:[\p{Alnum}_\.$:]*)"))
-
-
 
 (defn symb-context [symbols next-pc]
   {:symbols symbols
@@ -209,8 +208,8 @@
 
 
 (defn parse [context line kind]
-  (when-let [statement (format-statement line)]
-    (-> (filter (fn [{:keys [matcher]}] (matcher statement)) parsers)
+  (when-let [statement (format-statement line)]             ;; TODO format-statement is exec twice
+    (-> (filter (fn [{:keys [matcher]}] (matcher statement)) parsers) ;; TODO could use a cache here ? would that be a nice optim ? Bench ...
         first
         kind
         (apply [statement context]))))
@@ -282,10 +281,12 @@
 
 (defn assembler [asm-file]
   (with-open [rdr (clojure.java.io/reader (clojure.java.io/file asm-file))]
+    (println "opened")
     (let [lines (vec (line-seq rdr))
+          _ (println "in memory" (count lines) "lines")
           symbols (phase1 lines)]
       (phase2 asm-file lines symbols))))
 
-#_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/add/Add.asm")
-#_(assembler "/home/stup3fait/bin/nand2tetris/projects/06/max/Max.asm")
-(time (assembler "/home/jerome/bin/nand2tetris/projects/06/pong/Pong.asm"))
+(assembler "/home/stup3fait/bin/nand2tetris/projects/06/add/Add.asm")
+(assembler "/home/stup3fait/bin/nand2tetris/projects/06/max/Max.asm")
+(time (assembler "/home/stup3fait/bin/nand2tetris/projects/06/pong/Pong.asm"))
