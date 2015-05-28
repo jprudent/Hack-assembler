@@ -82,40 +82,39 @@
     (assoc ctx :symbols (conj symbols [symb (+ userspace-vars var-count)])
                :var-count (inc var-count))))
 
-(comment "Symbol table vector backed is 2 times slower than IndexMappedSymbolTable"
-         (defn index-where
-           ([v pred]
-            {:post [(or (nil? %)
-                        (and (not (neg? %))
-                             (pred (get v %))))]}
-            (loop [v v i 0]
-              (if (empty? v)
-                nil
-                (if (pred (first v))
-                  i
-                  (recur (rest v) (inc i)))))))
+(defn index-where
+  ([v pred]
+   {:post [(or (nil? %)
+               (and (not (neg? %))
+                    (pred (get v %))))]}
+   (loop [v v i 0]
+     (if (empty? v)
+       nil
+       (if (pred (first v))
+         i
+         (recur (rest v) (inc i)))))))
 
-         (extend-type IPersistentVector
-           SymbolTable
-           (referenced? [this symbol]
-             (some #(when (= symbol (first %)) true) this))
+(extend-type IPersistentVector
+  SymbolTable
+  (referenced? [this symbol]
+    (some #(when (= symbol (first %)) true) this))
 
-           (get-symbol-address [this symbol]
-             (some #(when (= symbol (first %)) (second %)) this))
+  (get-symbol-address [this symbol]
+    (some #(when (= symbol (first %)) (second %)) this))
 
-           (reference-symbol [this symbol]
-             (if (referenced? this symbol)
-               this
-               (conj this [symbol nil])))
+  (reference-symbol [this symbol]
+    (if (referenced? this symbol)
+      this
+      (conj this [symbol nil])))
 
-           (affect-symbol [this symbol address]
-             (if-let [symb-index (index-where this #(= symbol (first %)))]
-               (assoc this symb-index [symbol address])
-               (conj this [symbol address])))
+  (affect-symbol [this symbol address]
+    (if-let [symb-index (index-where this #(= symbol (first %)))]
+      (assoc this symb-index [symbol address])
+      (conj this [symbol address])))
 
-           (compute-nil-addresses [this]
-             (-> (reduce replace-nil-address {:symbols [] :var-count 0} this)
-                 :symbols))))
+  (compute-nil-addresses [this]
+    (-> (reduce replace-nil-address {:symbols [] :var-count 0} this)
+        :symbols)))
 
 (defrecord IndexMappedSymbolTable [index-map table]
   SymbolTable
