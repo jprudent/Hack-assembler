@@ -151,8 +151,7 @@
   (reduce (fn [symb-table [symb address]]
             (affect-symbol symb-table symb address))
           (->IndexMappedSymbolTable {} [])
-          predefined-symbols)
-  predefined-symbols)
+          predefined-symbols))
 
 (defn remove-spaces [s]
   (clojure.string/replace s #"\s" ""))
@@ -207,12 +206,11 @@
     :symbols   (fn [_ {:keys [symbols next-pc]}] (symb-context symbols (inc next-pc)))}])
 
 
-(defn parse [context line kind]
-  (when-let [statement (format-statement line)]             ;; TODO format-statement is exec twice
-    (-> (filter (fn [{:keys [matcher]}] (matcher statement)) parsers) ;; TODO could use a cache here ? would that be a nice optim ? Bench ...
-        first
-        kind
-        (apply [statement context]))))
+(defn parse [context statement kind]
+  (-> (filter (fn [{:keys [matcher]}] (matcher statement)) parsers) ;; TODO could use a cache here ? would that be a nice optim ? Bench ...
+      first
+      kind
+      (apply [statement context])))
 
 (defn parse-statements [{:keys [statements] :as context} line]
   (if-let [statement (parse context line :statement)]
@@ -282,8 +280,10 @@
 (defn assembler [asm-file]
   (with-open [rdr (clojure.java.io/reader (clojure.java.io/file asm-file))]
     (println "opened")
-    (let [lines (vec (line-seq rdr))
-          _ (println "in memory" (count lines) "lines")
+    (let [lines (->> (line-seq rdr)
+                    (map format-statement)
+                     (filter (comp not nil?)))
+          _ (println lines)
           symbols (phase1 lines)]
       (phase2 asm-file lines symbols))))
 
