@@ -170,46 +170,45 @@
 
 ;; TODO use multimethod
 (def parsers
-  [{:matcher   #(.startsWith % "@")
-    :statement (fn [statement {:keys [symbols]}]
-                 (let [symb (subs statement 1)
-                       address (or (get-symbol-address symbols symb) (s->int symb))]
+  [{:matcher   #"@(.+)"
+    :statement (fn [_ {:keys [symbols]} [symb]]
+                 (let [address (or (get-symbol-address symbols symb) (s->int symb))]
                    {:type    :A_INSTRUCTION
                     :address address}))
-    :symbols   (fn [statement {:keys [symbols next-pc]}]
-                 (let [symb (subs statement 1)]
-                   (if (user-symbol? symb)
-                     (symb-context (reference-symbol symbols symb) (inc next-pc))
-                     (symb-context symbols (inc next-pc)))))} ;; TODO SRP
+    :symbols   (fn [_ {:keys [symbols next-pc]} [symb]]
+                 (if (user-symbol? symb)
+                   (symb-context (reference-symbol symbols symb) (inc next-pc))
+                   (symb-context symbols (inc next-pc))))}  ;; TODO SRP
 
-   {:matcher   #(.contains % "=")
-    :statement (fn [statement _]
-                 (let [[_ dest comp] (re-matches #"([^=]+)=(.+)" statement)]
-                   {:type :C_INSTRUCTION
-                    :dest dest
-                    :comp comp}))
-    :symbols   (fn [_ {:keys [symbols next-pc]}] (symb-context symbols (inc next-pc)))}
+   {:matcher   #"([^=]+)=(.+)"
+    :statement (fn [_ _ [dest comp]]
+                 {:type :C_INSTRUCTION
+                  :dest dest
+                  :comp comp})
+    :symbols   (fn [_ {:keys [symbols next-pc]} _]
+                 (symb-context symbols (inc next-pc)))}
 
-   {:matcher   #(re-matches #"^\(.+\)$" %)
+   {:matcher   #"^\(.+\)$"
     :statement (constantly nil)
-    :symbols   (fn [statement {:keys [symbols next-pc]}]
-                 (let [[_ symb] (re-matches #"^\((.+)\)$" statement)]
-                   (symb-context (affect-symbol symbols symb next-pc) next-pc)))}
+    :symbols   (fn [_ {:keys [symbols next-pc]} [symb]]
+                 (symb-context (affect-symbol symbols symb next-pc) next-pc))}
 
-   {:matcher   #(re-matches #"[^;]+;J\p{Upper}{2}" %)
-    :statement (fn [statement _]
-                 (let [[_ comp jump] (re-matches #"([^;]+);(J\p{Upper}{2})" statement)]
-                   {:type :J_INSTRUCTION
-                    :comp comp
-                    :jump jump}))
-    :symbols   (fn [_ {:keys [symbols next-pc]}] (symb-context symbols (inc next-pc)))}])
+   {:matcher   #"([^;]+);(J\p{Upper}{2})"
+    :statement (fn [_ _ [comp jump]]
+                 {:type :J_INSTRUCTION
+                  :comp comp
+                  :jump jump})
+    :symbols   (fn [_ {:keys [symbols next-pc]} _]
+                 (symb-context symbols (inc next-pc)))}])
 
 
 (defn parse [context statement kind]
-  (-> (filter (fn [{:keys [matcher]}] (matcher statement)) parsers) ;; TODO could use a cache here ? would that be a nice optim ? Bench ...
-      first
-      kind
-      (apply [statement context])))
+  (let [[parser args] (some (fn [{:keys [matcher] :as parser}]
+                              (when-let [[_ & parts] (re-matches matcher statement)]
+                                [parser [statement context parts]]))
+                            parsers)]
+    (-> (kind parser)                                       ;; TODO could use a cache here ? would that be a nice optim ? Bench ...
+        (apply args))))
 
 (defn parse-statements [{:keys [statements] :as context} line]
   (if-let [statement (parse context line :statement)]
@@ -278,11 +277,9 @@
 
 (defn assembler [asm-file]
   (with-open [rdr (clojure.java.io/reader (clojure.java.io/file asm-file))]
-    (println "opened")
     (let [lines (->> (line-seq rdr)
-                    (map format-statement)
+                     (map format-statement)
                      (filter (comp not nil?)))
-          _ (println lines)
           symbols (phase1 lines)]
       (phase2 asm-file lines symbols))))
 
