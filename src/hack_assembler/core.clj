@@ -171,41 +171,41 @@
 ;; TODO use multimethod
 (def parsers
   [{:matcher   #"@(.+)"
-    :statement (fn [_ {:keys [symbols]} [symb]]
+    :statement (fn [{:keys [symbols]} [symb]]
                  (let [address (or (get-symbol-address symbols symb) (s->int symb))]
                    {:type    :A_INSTRUCTION
                     :address address}))
-    :symbols   (fn [_ {:keys [symbols next-pc]} [symb]]
+    :symbols   (fn [{:keys [symbols next-pc]} [symb]]
                  (if (user-symbol? symb)
                    (symb-context (reference-symbol symbols symb) (inc next-pc))
                    (symb-context symbols (inc next-pc))))}  ;; TODO SRP
 
    {:matcher   #"([^=]+)=(.+)"
-    :statement (fn [_ _ [dest comp]]
+    :statement (fn [ _ [dest comp]]
                  {:type :C_INSTRUCTION
                   :dest dest
                   :comp comp})
-    :symbols   (fn [_ {:keys [symbols next-pc]} _]
+    :symbols   (fn [{:keys [symbols next-pc]} _]
                  (symb-context symbols (inc next-pc)))}
 
    {:matcher   #"^\(.+\)$"
     :statement (constantly nil)
-    :symbols   (fn [_ {:keys [symbols next-pc]} [symb]]
+    :symbols   (fn [{:keys [symbols next-pc]} [symb]]
                  (symb-context (affect-symbol symbols symb next-pc) next-pc))}
 
    {:matcher   #"([^;]+);(J\p{Upper}{2})"
-    :statement (fn [_ _ [comp jump]]
+    :statement (fn [_ [comp jump]]
                  {:type :J_INSTRUCTION
                   :comp comp
                   :jump jump})
-    :symbols   (fn [_ {:keys [symbols next-pc]} _]
+    :symbols   (fn [{:keys [symbols next-pc]} _]
                  (symb-context symbols (inc next-pc)))}])
 
 
 (defn parse [context statement kind]
   (let [[parser args] (some (fn [{:keys [matcher] :as parser}]
                               (when-let [[_ & parts] (re-matches matcher statement)]
-                                [parser [statement context parts]]))
+                                [parser [context parts]]))
                             parsers)]
     (-> (kind parser)                                       ;; TODO could use a cache here ? would that be a nice optim ? Bench ...
         (apply args))))
