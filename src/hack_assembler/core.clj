@@ -181,7 +181,7 @@
                    (symb-context symbols (inc next-pc))))}  ;; TODO SRP
 
    {:matcher   #"([^=]+)=(.+)"
-    :statement (fn [ _ [dest comp]]
+    :statement (fn [_ [dest comp]]
                  {:type :C_INSTRUCTION
                   :dest dest
                   :comp comp})
@@ -207,7 +207,7 @@
                               (when-let [[_ & parts] (re-matches matcher statement)]
                                 [parser [context parts]]))
                             parsers)]
-    (-> (kind parser)                                       ;; TODO could use a cache here ? would that be a nice optim ? Bench ...
+    (-> (kind parser)
         (apply args))))
 
 (defn parse-statements [{:keys [statements] :as context} line]
